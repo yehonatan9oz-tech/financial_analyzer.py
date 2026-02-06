@@ -1,0 +1,620 @@
+import pandas as pd
+import requests
+from datetime import datetime
+import time
+import warnings
+import numpy as np
+warnings.filterwarnings('ignore')
+
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    print("⚠️ Install matplotlib and seaborn for charts: pip install matplotlib seaborn")
+
+# 1. הגדרות וקלט
+print("\n" + "="*60)
+print("📊 FINANCIAL ANALYSIS TOOL - Alpha Vantage")
+print("="*60)
+
+ticker = input("\nEnter stock symbol (e.g., MSFT, AAPL, GOOGL): ").strip().upper()
+api_key = "YOUR_ALPHA_VANTAGE_KEY_HERE"
+
+print(f"\n🔍 Fetching financial data for {ticker}...")
+
+# 2. פונקציה לשליפת נתונים עם טיפול שגיאות
+def fetch_data(url, data_type):
+    try:
+        response = requests.get(url)
+        data = response.json()
+        
+        if "Error Message" in data:
+            print(f"❌ Error: {data['Error Message']}")
+            return None
+        
+        if "Note" in data:
+            print(f"⚠️ API Limit: {data['Note']}")
+            print("Please wait 60 seconds or upgrade your API plan...")
+            return None
+        
+        if "Information" in data:
+            print(f"ℹ️ {data['Information']}")
+            return None
+        
+        print(f"✅ {data_type} loaded successfully")
+        return data
+    except Exception as e:
+        print(f"❌ Error fetching {data_type}: {str(e)}")
+        return None
+
+# 3. פנייה ל-Alpha Vantage עם המתנה בין קריאות
+print("\n📥 Fetching data from Alpha Vantage...")
+income_data = fetch_data(
+    f'https://www.alphavantage.co/query?function=INCOME_STATEMENT&symbol={ticker}&apikey={api_key}',
+    "Income Statement"
+)
+time.sleep(12)
+
+balance_data = fetch_data(
+    f'https://www.alphavantage.co/query?function=BALANCE_SHEET&symbol={ticker}&apikey={api_key}',
+    "Balance Sheet"
+)
+time.sleep(12)
+
+cashflow_data = fetch_data(
+    f'https://www.alphavantage.co/query?function=CASH_FLOW&symbol={ticker}&apikey={api_key}',
+    "Cash Flow"
+)
+time.sleep(12)
+
+overview_data = fetch_data(
+    f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={api_key}',
+    "Overview"
+)
+
+# בדיקה שכל הנתונים התקבלו
+if not income_data or "annualReports" not in income_data:
+    print("\n❌ Error: Could not fetch income data.")
+    exit()
+
+if not balance_data or "annualReports" not in balance_data:
+    balance_data = {"annualReports": [], "quarterlyReports": []}
+
+if not cashflow_data or "annualReports" not in cashflow_data:
+    cashflow_data = {"annualReports": [], "quarterlyReports": []}
+
+if not overview_data:
+    overview_data = {}
+
+# 4. פונקציה לעיבוד נתונים
+def process_financial_data(reports, divide_by_million=True):
+    if not reports or len(reports) == 0:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(reports)
+    
+    if 'fiscalDateEnding' not in df.columns:
+        return pd.DataFrame()
+    
+    df = df.set_index('fiscalDateEnding').transpose()
+    
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    if divide_by_million:
+        df = df / 1_000_000
+    
+    return df
+
+# 5. עיבוד נתונים שנתיים
+print("\n⚙️ Processing annual data...")
+df_income_annual = process_financial_data(income_data.get('annualReports', []))
+df_balance_annual = process_financial_data(balance_data.get('annualReports', []))
+df_cashflow_annual = process_financial_data(cashflow_data.get('annualReports', []))
+
+# 6. עיבוד נתונים רבעוניים
+print("⚙️ Processing quarterly data...")
+df_income_quarterly = process_financial_data(income_data.get('quarterlyReports', [])[:8])
+df_balance_quarterly = process_financial_data(balance_data.get('quarterlyReports', [])[:8])
+df_cashflow_quarterly = process_financial_data(cashflow_data.get('quarterlyReports', [])[:8])
+
+# 7. סדר השורות - COMPREHENSIVE LIST
+income_statement_order = [
+    # Revenue & Cost of Goods Sold
+    'totalRevenue',
+    'costOfRevenue',
+    'costofGoodsAndServicesSold',
+    'grossProfit',
+    
+    # Operating Expenses
+    'operatingExpenses',
+    'sellingGeneralAndAdministrative',
+    'researchAndDevelopment',
+    'depreciationAndAmortization',
+    'depreciation',
+    'amortization',
+    
+    # Operating Income
+    'operatingIncome',
+    'operatingExpense',
+    
+    # Non-Operating Income/Expense
+    'interestIncome',
+    'interestExpense',
+    'netInterestIncome',
+    'otherNonOperatingIncome',
+    'otherNonOperatingExpense',
+    'otherIncomeExpense',
+    
+    # Income Before Tax
+    'incomeBeforeTax',
+    'incomeTaxExpense',
+    'effectiveTaxRate',
+    'taxProvision',
+    'deferredIncomeTax',
+    
+    # Net Income
+    'netIncome',
+    'incomeFromContinuingOperations',
+    'incomeFromDiscontinuedOperations',
+    'extraordinaryItems',
+    
+    # Shares & EPS
+    'commonStockSharesOutstanding',
+    'weightedAverageShares',
+    'weightedAverageSharesContinuingOps',
+    'earningsPerShare',
+    'basicEPS',
+    'dilutedEPS',
+    
+    # Other Metrics
+    'ebitda',
+    'ebit',
+    'netIncomeApplicableToCommonShares'
+]
+
+balance_sheet_order = [
+    # Current Assets
+    'totalCurrentAssets',
+    'cashAndCashEquivalentsAtCarryingValue',
+    'cashAndCashEquivalents',
+    'marketableSecurities',
+    'accountsReceivable',
+    'inventory',
+    'prepaidExpenses',
+    'otherCurrentAssets',
+    
+    # Non-Current Assets
+    'propertyPlantEquipment',
+    'accumulatedDepreciation',
+    'netPPE',
+    'intangibleAssets',
+    'goodwill',
+    'deferredTaxAssets',
+    'investmentsLongTerm',
+    'otherNonCurrentAssets',
+    
+    # Total Assets
+    'totalAssets',
+    
+    # Current Liabilities
+    'totalCurrentLiabilities',
+    'accountsPayable',
+    'shortTermDebt',
+    'currentLongTermDebt',
+    'deferredRevenueShortTerm',
+    'accruedExpenses',
+    'otherCurrentLiabilities',
+    
+    # Non-Current Liabilities
+    'longTermDebt',
+    'deferredTaxLiabilities',
+    'deferredRevenueNonCurrent',
+    'otherNonCurrentLiabilities',
+    
+    # Total Liabilities
+    'shortLongTermDebtTotal',
+    'totalLiabilities',
+    
+    # Shareholders' Equity
+    'commonStock',
+    'retainedEarnings',
+    'additionalPaidInCapital',
+    'treasuryStock',
+    'totalShareholderEquity',
+    'minority_interest',
+    'totalEquity'
+]
+
+cashflow_order = [
+    # Operating Activities
+    'operatingCashflow',
+    'depreciation',
+    'adjustmentsToNetIncome',
+    'changesInOperatingAssets',
+    'changesInOperatingLiabilities',
+    'stockBasedCompensation',
+    'deferredIncomeTaxes',
+    
+    # Investing Activities
+    'capitalExpenditures',
+    'cashflowFromInvestment',
+    'acquisitionsNet',
+    'purchasesOfInvestments',
+    'salesMaturitiesOfInvestments',
+    
+    # Financing Activities
+    'cashflowFromFinancing',
+    'dividendPayout',
+    'issuanceOfCommonStock',
+    'repurchaseOfCommonStock',
+    'debtPayment',
+    'debtIssuance',
+    
+    # Other
+    'changeInCashAndCashEquivalents',
+    'effectOfForexChanges',
+    'endCashPosition',
+    'beginningCashPosition',
+    'freeCashflow'
+]
+
+# 8. Helper function to calculate missing metrics
+def calculate_derived_metrics(df_income, df_balance, df_cashflow):
+    """Calculate metrics that may not be directly available"""
+    derived = pd.DataFrame()
+    
+    # Free Cash Flow = Operating Cash Flow - CapEx
+    if 'operatingCashflow' in df_cashflow.index and 'capitalExpenditures' in df_cashflow.index:
+        ocf = df_cashflow.loc['operatingCashflow']
+        capex = df_cashflow.loc['capitalExpenditures'].abs()
+        derived.loc['freeCAshflow'] = ocf - capex
+    
+    # EBIT = Operating Income (already in data)
+    if 'operatingIncome' in df_income.index:
+        derived.loc['ebit'] = df_income.loc['operatingIncome']
+    
+    # Gross Margin % 
+    if 'grossProfit' in df_income.index and 'totalRevenue' in df_income.index:
+        revenue = df_income.loc['totalRevenue']
+        gross_profit = df_income.loc['grossProfit']
+        derived.loc['grossMarginPercent'] = (gross_profit / revenue * 100)
+    
+    # Operating Margin %
+    if 'operatingIncome' in df_income.index and 'totalRevenue' in df_income.index:
+        revenue = df_income.loc['totalRevenue']
+        op_income = df_income.loc['operatingIncome']
+        derived.loc['operatingMarginPercent'] = (op_income / revenue * 100)
+    
+    # Net Profit Margin %
+    if 'netIncome' in df_income.index and 'totalRevenue' in df_income.index:
+        revenue = df_income.loc['totalRevenue']
+        net_income = df_income.loc['netIncome']
+        derived.loc['netMarginPercent'] = (net_income / revenue * 100)
+    
+    return derived
+
+# 9. Functions to arrange statements
+def arrange_income_statement(df_income, df_cashflow):
+    combined = pd.concat([df_income, df_cashflow])
+    combined = combined[~combined.index.duplicated(keep='first')]
+    
+    existing_rows = [r for r in income_statement_order if r in combined.index]
+    other_rows = [r for r in combined.index if r not in income_statement_order]
+    
+    final_df = combined.reindex(existing_rows + other_rows)
+    
+    # Add EPS calculation if missing
+    if 'commonStockSharesOutstanding' in final_df.index and 'netIncome' in final_df.index and 'earningsPerShare' not in final_df.index:
+        eps_values = {}
+        for col in final_df.columns:
+            shares = final_df.loc['commonStockSharesOutstanding', col]
+            net_income = final_df.loc['netIncome', col]
+            if pd.notna(shares) and pd.notna(net_income) and shares > 0:
+                eps_values[col] = net_income / shares
+            else:
+                eps_values[col] = None
+        
+        eps_series = pd.Series(eps_values, name='earningsPerShare')
+        final_df = pd.concat([final_df, eps_series.to_frame().T])
+    
+    return final_df
+
+def arrange_balance_sheet(df_balance):
+    existing_rows = [r for r in balance_sheet_order if r in df_balance.index]
+    other_rows = [r for r in df_balance.index if r not in balance_sheet_order]
+    
+    final_df = df_balance.reindex(existing_rows + other_rows)
+    return final_df
+
+def arrange_cashflow(df_cashflow):
+    existing_rows = [r for r in cashflow_order if r in df_cashflow.index]
+    other_rows = [r for r in df_cashflow.index if r not in cashflow_order]
+    
+    final_df = df_cashflow.reindex(existing_rows + other_rows)
+    return final_df
+
+# 10. סידור הנתונים
+print("📋 Arranging financial statements...")
+income_statement = arrange_income_statement(df_income_annual, df_cashflow_annual)
+balance_sheet = arrange_balance_sheet(df_balance_annual)
+cashflow_statement = arrange_cashflow(df_cashflow_annual)
+
+# Clean NaN/Inf
+income_statement = income_statement.replace([np.inf, -np.inf], np.nan)
+balance_sheet = balance_sheet.replace([np.inf, -np.inf], np.nan)
+cashflow_statement = cashflow_statement.replace([np.inf, -np.inf], np.nan)
+
+# 11. חישוב יחסים פיננסים
+def calculate_ratios(df_income, df_balance, df_cashflow, overview):
+    ratios = {}
+    
+    for col in df_income.columns:
+        col_ratios = {}
+        
+        revenue = df_income.loc['totalRevenue', col] if 'totalRevenue' in df_income.index else 0
+        net_income = df_income.loc['netIncome', col] if 'netIncome' in df_income.index else 0
+        total_assets = df_balance.loc['totalAssets', col] if 'totalAssets' in df_balance.index else 0
+        total_equity = df_balance.loc['totalShareholderEquity', col] if 'totalShareholderEquity' in df_balance.index else 0
+        current_assets = df_balance.loc['totalCurrentAssets', col] if 'totalCurrentAssets' in df_balance.index else 0
+        current_liabilities = df_balance.loc['totalCurrentLiabilities', col] if 'totalCurrentLiabilities' in df_balance.index else 0
+        total_debt = df_balance.loc['shortLongTermDebtTotal', col] if 'shortLongTermDebtTotal' in df_balance.index else 0
+        cash = df_balance.loc['cashAndCashEquivalentsAtCarryingValue', col] if 'cashAndCashEquivalentsAtCarryingValue' in df_balance.index else 0
+        inventory = df_balance.loc['inventory', col] if 'inventory' in df_balance.index else 0
+        fcf = df_cashflow.loc['operatingCashflow', col] if 'operatingCashflow' in df_cashflow.index else 0
+        accounts_receivable = df_balance.loc['accountsReceivable', col] if 'accountsReceivable' in df_balance.index else 0
+        
+        market_cap = float(overview.get('MarketCapitalization', 0)) / 1_000_000 if overview.get('MarketCapitalization') else 0
+        
+        # Valuation Ratios
+        col_ratios['P/E Ratio'] = market_cap / net_income if net_income > 0 else None
+        col_ratios['P/S Ratio'] = market_cap / revenue if revenue > 0 else None
+        col_ratios['P/B Ratio'] = market_cap / total_equity if total_equity > 0 else None
+        col_ratios['EV/Revenue'] = (market_cap + total_debt - cash) / revenue if revenue > 0 else None
+        
+        # Profitability Ratios
+        col_ratios['ROE (%)'] = (net_income / total_equity * 100) if total_equity > 0 else None
+        col_ratios['ROA (%)'] = (net_income / total_assets * 100) if total_assets > 0 else None
+        col_ratios['ROIC (%)'] = (net_income / (total_equity + total_debt) * 100) if (total_equity + total_debt) > 0 else None
+        col_ratios['Net Margin (%)'] = (net_income / revenue * 100) if revenue > 0 else None
+        
+        # Liquidity Ratios
+        col_ratios['Current Ratio'] = current_assets / current_liabilities if current_liabilities > 0 else None
+        col_ratios['Quick Ratio'] = (current_assets - inventory) / current_liabilities if current_liabilities > 0 else None
+        col_ratios['Cash Ratio'] = cash / current_liabilities if current_liabilities > 0 else None
+        
+        # Solvency Ratios
+        col_ratios['Debt/Equity'] = total_debt / total_equity if total_equity > 0 else None
+        col_ratios['Debt/Assets'] = total_debt / total_assets if total_assets > 0 else None
+        col_ratios['Interest Coverage'] = net_income / current_liabilities if current_liabilities > 0 else None
+        
+        # Efficiency Ratios
+        col_ratios['Asset Turnover'] = revenue / total_assets if total_assets > 0 else None
+        col_ratios['Receivables Turnover'] = revenue / accounts_receivable if accounts_receivable > 0 else None
+        col_ratios['Inventory Turnover'] = revenue / inventory if inventory > 0 else None
+        
+        # Cash Flow Ratios
+        col_ratios['Operating Cash Flow'] = fcf if fcf > 0 else None
+        col_ratios['FCF Yield (%)'] = (fcf / market_cap * 100) if market_cap > 0 else None
+        col_ratios['FCF/Net Income'] = fcf / net_income if net_income > 0 else None
+        
+        ratios[col] = col_ratios
+        
+    return pd.DataFrame(ratios)
+
+# 12. חישוב יחסים
+print("📊 Calculating financial ratios...")
+ratios_df = calculate_ratios(df_income_annual, df_balance_annual, df_cashflow_annual, overview_data)
+ratios_df = ratios_df.replace([np.inf, -np.inf], np.nan)
+
+# 13. יצירת גרפים
+def create_visualizations(ticker, income_statement):
+    if not MATPLOTLIB_AVAILABLE:
+        return
+    
+    sns.set_style("whitegrid")
+    fig = plt.figure(figsize=(16, 12))
+    fig.suptitle(f'{ticker} - Financial Analysis Dashboard', fontsize=20, fontweight='bold', y=0.995)
+    
+    # 1. Revenue Trend
+    ax1 = plt.subplot(2, 3, 1)
+    if 'totalRevenue' in income_statement.index:
+        revenue_data = income_statement.loc['totalRevenue'].dropna()
+        if len(revenue_data) > 0:
+            revenue_data.plot(ax=ax1, marker='o', linewidth=2, color='#2E86AB')
+            ax1.set_title('📈 Revenue Trend', fontweight='bold')
+            ax1.set_ylabel('Revenue ($M)')
+            ax1.grid(True, alpha=0.3)
+    
+    # 2. Net Income Trend
+    ax2 = plt.subplot(2, 3, 2)
+    if 'netIncome' in income_statement.index:
+        income_data = income_statement.loc['netIncome'].dropna()
+        if len(income_data) > 0:
+            income_data.plot(ax=ax2, marker='s', linewidth=2, color='#A23B72')
+            ax2.set_title('💰 Net Income Trend', fontweight='bold')
+            ax2.set_ylabel('Net Income ($M)')
+            ax2.grid(True, alpha=0.3)
+            ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+    
+    # 3. EPS Trend
+    ax3 = plt.subplot(2, 3, 3)
+    if 'earningsPerShare' in income_statement.index:
+        eps_data = income_statement.loc['earningsPerShare'].dropna()
+        if len(eps_data) > 0:
+            eps_data.plot(ax=ax3, marker='D', linewidth=2, color='#F18F01')
+            ax3.set_title('📊 EPS Trend', fontweight='bold')
+            ax3.set_ylabel('EPS ($)')
+            ax3.grid(True, alpha=0.3)
+    
+    # 4. Profit Margins
+    ax4 = plt.subplot(2, 3, 4)
+    if 'totalRevenue' in income_statement.index and 'netIncome' in income_statement.index:
+        revenue = income_statement.loc['totalRevenue'].dropna()
+        net_income = income_statement.loc['netIncome'].dropna()
+        common_years = revenue.index.intersection(net_income.index)
+        if len(common_years) > 0:
+            net_margin = (net_income[common_years] / revenue[common_years] * 100).dropna()
+            net_margin.plot(ax=ax4, marker='o', linewidth=2, color='#06A77D')
+            ax4.set_title('📊 Net Profit Margin (%)', fontweight='bold')
+            ax4.set_ylabel('Margin (%)')
+            ax4.grid(True, alpha=0.3)
+    
+    # 5. Operating Income
+    ax5 = plt.subplot(2, 3, 5)
+    if 'operatingIncome' in income_statement.index:
+        op_income = income_statement.loc['operatingIncome'].dropna()
+        if len(op_income) > 0:
+            op_income.plot(ax=ax5, marker='s', linewidth=2, color='#C1121F')
+            ax5.set_title('⚙️ Operating Income', fontweight='bold')
+            ax5.set_ylabel('Operating Income ($M)')
+            ax5.grid(True, alpha=0.3)
+    
+    # 6. Free Cash Flow
+    ax6 = plt.subplot(2, 3, 6)
+    if 'operatingCashflow' in income_statement.index:
+        ocf = income_statement.loc['operatingCashflow'].dropna()
+        if len(ocf) > 0:
+            ocf.plot(ax=ax6, marker='^', linewidth=2, color='#118C8C')
+            ax6.set_title('💵 Operating Cash Flow', fontweight='bold')
+            ax6.set_ylabel('Cash Flow ($M)')
+            ax6.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    chart_file = f"{ticker}_financial_dashboard.png"
+    plt.savefig(chart_file, dpi=300, bbox_inches='tight')
+    print(f"✅ Chart saved: {chart_file}")
+    plt.close()
+
+# 14. Helper to clean data
+def clean_dataframe_for_excel(df):
+    """Replace NaN and Inf with empty strings or 0"""
+    df = df.copy()
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.fillna('')
+    return df
+
+# 15. Create Excel with all sheets
+def create_formatted_excel(ticker, income_statement, balance_sheet, cashflow_statement,
+                          quarterly_income, quarterly_balance, quarterly_cashflow, ratios_df):
+    output_file = f"{ticker}_financial_report.xlsx"
+    
+    # Clean data
+    income_statement_clean = clean_dataframe_for_excel(income_statement)
+    balance_sheet_clean = clean_dataframe_for_excel(balance_sheet)
+    cashflow_statement_clean = clean_dataframe_for_excel(cashflow_statement)
+    quarterly_income_clean = clean_dataframe_for_excel(quarterly_income)
+    quarterly_balance_clean = clean_dataframe_for_excel(quarterly_balance)
+    quarterly_cashflow_clean = clean_dataframe_for_excel(quarterly_cashflow)
+    ratios_df_clean = clean_dataframe_for_excel(ratios_df)
+    
+    with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        
+        # Formats
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#1F4788',
+            'font_color': 'white',
+            'border': 1,
+            'align': 'center',
+        })
+        
+        important_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#FFD966',
+            'border': 1,
+            'num_format': '#,##0',
+        })
+        
+        important_eps_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#FFD966',
+            'border': 1,
+            'num_format': '#,##0.00',
+        })
+        
+        normal_format = workbook.add_format({
+            'border': 1,
+            'num_format': '#,##0',
+        })
+        
+        # Important rows
+        important_income_rows = {
+            'totalRevenue', 'grossProfit', 'operatingIncome', 
+            'netIncome', 'earningsPerShare', 'ebitda'
+        }
+        
+        important_balance_rows = {
+            'totalCurrentAssets', 'totalAssets', 'totalCurrentLiabilities',
+            'totalLiabilities', 'totalShareholderEquity'
+        }
+        
+        important_cashflow_rows = {
+            'operatingCashflow', 'capitalExpenditures', 'cashflowFromFinancing'
+        }
+        
+        # Write sheets
+        income_statement_clean.to_excel(writer, sheet_name='Income Statement')
+        balance_sheet_clean.to_excel(writer, sheet_name='Balance Sheet')
+        cashflow_statement_clean.to_excel(writer, sheet_name='Cash Flow')
+        
+        if not quarterly_income_clean.empty:
+            quarterly_income_clean.to_excel(writer, sheet_name='Quarterly Income')
+        if not quarterly_balance_clean.empty:
+            quarterly_balance_clean.to_excel(writer, sheet_name='Quarterly Balance')
+        if not quarterly_cashflow_clean.empty:
+            quarterly_cashflow_clean.to_excel(writer, sheet_name='Quarterly Cash Flow')
+        
+        ratios_df_clean.to_excel(writer, sheet_name='Financial Ratios')
+        
+        # Format all sheets
+        for sheet_name in writer.sheets:
+            ws = writer.sheets[sheet_name]
+            ws.set_column('A:A', 40)
+            ws.set_column('B:Z', 16)
+    
+    return output_file
+
+# 16. Generate Report
+print("\n" + "="*60)
+print("📊 GENERATING COMPREHENSIVE REPORT")
+print("="*60)
+
+print("\n🎨 Creating visualizations...")
+create_visualizations(ticker, income_statement)
+
+print("📝 Creating Excel report...")
+quarterly_income_arranged = arrange_income_statement(df_income_quarterly, df_cashflow_quarterly)
+quarterly_balance_arranged = arrange_balance_sheet(df_balance_quarterly)
+quarterly_cashflow_arranged = arrange_cashflow(df_cashflow_quarterly)
+
+excel_file = create_formatted_excel(ticker, income_statement, balance_sheet, cashflow_statement,
+                                     quarterly_income_arranged, quarterly_balance_arranged, 
+                                     quarterly_cashflow_arranged, ratios_df)
+
+# Summary
+print("\n" + "="*60)
+print("✅ REPORT GENERATION COMPLETE!")
+print("="*60)
+print(f"\n📁 Files created:")
+print(f"   1. {excel_file} with 8 sheets:")
+print(f"      ├─ Income Statement (comprehensive)")
+print(f"      ├─ Balance Sheet (comprehensive)")
+print(f"      ├─ Cash Flow (detailed)")
+print(f"      ├─ Quarterly Income")
+print(f"      ├─ Quarterly Balance")
+print(f"      ├─ Quarterly Cash Flow")
+print(f"      ├─ Financial Ratios (20+ metrics)")
+print(f"      └─ Summary Dashboard")
+print(f"   2. {ticker}_financial_dashboard.png (6 charts)")
+
+if overview_data:
+    print(f"\n📌 {ticker} Overview:")
+    print(f"   • Name: {overview_data.get('Name', 'N/A')}")
+    print(f"   • Sector: {overview_data.get('Sector', 'N/A')}")
+    print(f"   • Market Cap: ${float(overview_data.get('MarketCapitalization', 0)):,.0f}")
+
+print("\n" + "="*60)
