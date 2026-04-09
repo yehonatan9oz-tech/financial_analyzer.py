@@ -1188,7 +1188,7 @@ def main() -> None:
         df_inc_a, df_cf_a, fmt,
     )
     add_professional_charts(
-        wb, worksheets["Dashboard"], df_inc_a, df_cf_a, ratios, fmt,
+        wb, worksheets["Dashboard"], df_inc_a, df_cf_a, ratios_df, fmt,
     )
 
     for sname, df_disp, title in sheet_specs[1:-2]: # Exclude Dashboard and new Valuation sheet
