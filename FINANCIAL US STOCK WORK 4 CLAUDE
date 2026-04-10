@@ -1,0 +1,1098 @@
+#!/usr/bin/env python3
+"""
+Investment Bank Grade Financial Analyzer V4
+=========================================
+Fetches fundamental data from Alpha Vantage and generates an
+institutional-quality Excel workbook for deep equity analysis.
+Upgraded to V4 with visual polish, data precision, and bug fixes.
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
+import requests
+import xlsxwriter
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+API_BASE_URL: str = "https://www.alphavantage.co/query"
+API_DELAY_SEC: int = 12          # Free tier: 5 calls / min
+
+# ── Institutional color palette ──────────────────────────────────────────────
+C: Dict[str, str] = {
+    "dark_blue":       "#1F4E78",
+    "mid_blue":        "#2E75B6",
+    "light_blue_fill": "#BDD7EE",
+    "pale_blue":       "#DEEAF1",
+    "light_grey":      "#F2F2F2",
+    "medium_grey":     "#D6DCE4",
+    "white":           "#FFFFFF",
+    "pos_green":       "#375623",
+    "pos_green_fill":  "#E2EFDA",
+    "neg_red":         "#9C0006",
+    "neg_red_fill":    "#FFC7CE",
+    "neutral_fill":    "#FFEB9C",
+    "text_primary":    "#1F1F1F",
+    "text_muted":      "#595959",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LABEL MAPS
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INCOME_LABELS: Dict[str, str] = {
+    "totalRevenue":                    "Total Revenue",
+    "costOfRevenue":                   "Cost of Goods Sold (COGS)",
+    "grossProfit":                     "Gross Profit",
+    "_gross_margin":                   "  Gross Margin %",
+    "sellingGeneralAndAdministrative": "  Selling, General & Administrative",
+    "researchAndDevelopment":          "  Research & Development",
+    "operatingExpenses":               "  Total Operating Expenses",
+    "operatingIncome":                 "Operating Income (EBIT)",
+    "_operating_margin":               "  Operating Margin %",
+    "_rev_yoy":                        "  Revenue YoY Growth",
+    "_opinc_yoy":                      "  Operating Income YoY Growth",
+    "interestIncome":                  "  Interest Income",
+    "interestExpense":                 "  Interest Expense",
+    "netInterestIncome":               "  Net Interest Income",
+    "otherNonOperatingIncome":         "  Other Non-Operating Income",
+    "incomeBeforeTax":                 "Income Before Tax (EBT)",
+    "incomeTaxExpense":                "  Income Tax Expense",
+    "netIncome":                       "Net Income",
+    "_net_margin":                     "  Net Margin %",
+    "_ni_yoy":                         "  Net Income YoY Growth",
+    "earningsPerShare":                "  Earnings Per Share (EPS, $)",
+    "commonStockSharesOutstanding":    "  Shares Outstanding (M)",
+    "ebitda":                          "EBITDA",
+    "depreciationAndAmortization":     "  D&A",
+}
+
+_INCOME_ORDER: List[str] = [
+    "totalRevenue", "costOfRevenue", "grossProfit", "_gross_margin",
+    "sellingGeneralAndAdministrative", "researchAndDevelopment",
+    "operatingExpenses", "operatingIncome", "_operating_margin",
+    "_rev_yoy", "_opinc_yoy",
+    "interestIncome", "interestExpense", "netInterestIncome",
+    "otherNonOperatingIncome", "incomeBeforeTax", "incomeTaxExpense",
+    "netIncome", "_net_margin", "_ni_yoy",
+    "earningsPerShare", "commonStockSharesOutstanding",
+    "ebitda", "depreciationAndAmortization",
+]
+
+_CF_LABELS: Dict[str, str] = {
+    "operatingCashflow":                    "Cash from Operations (CFO)",
+    "capitalExpenditures":                  "  Capital Expenditures (CapEx)",
+    "freeCashFlow":                         "Free Cash Flow (FCF)",
+    "_fcf_margin":                          "  FCF Margin %",
+    "depreciationDepletionAndAmortization": "  D&A (non-cash add-back)",
+    "changeInInventory":                    "  Change in Inventory",
+    "changeInReceivables":                  "  Change in Receivables",
+    "changeInOperatingLiabilities":         "  Change in Operating Liabilities",
+    "changeInOperatingAssets":              "  Change in Operating Assets",
+    "cashflowFromInvestment":               "Cash from Investing Activities",
+    "cashflowFromFinancing":                "Cash from Financing Activities",
+    "dividendPayout":                       "  Dividend Payments",
+    "dividendPayoutCommonStock":            "  Common Stock Dividends",
+    "paymentsForRepurchaseOfCommonStock":   "  Share Buybacks",
+    "proceedsFromRepaymentsOfShortTermDebt":"  Short-Term Debt (Net)",
+    "changeInCashAndCashEquivalents":       "Net Change in Cash",
+}
+
+_CF_ORDER: List[str] = [
+    "operatingCashflow", "capitalExpenditures", "freeCashFlow", "_fcf_margin",
+    "depreciationDepletionAndAmortization",
+    "changeInInventory", "changeInReceivables",
+    "changeInOperatingLiabilities", "changeInOperatingAssets",
+    "cashflowFromInvestment", "cashflowFromFinancing",
+    "dividendPayout", "dividendPayoutCommonStock",
+    "paymentsForRepurchaseOfCommonStock",
+    "proceedsFromRepaymentsOfShortTermDebt",
+    "changeInCashAndCashEquivalents",
+]
+
+_BS_LABELS: Dict[str, str] = {
+    "totalAssets":                             "Total Assets",
+    "totalCurrentAssets":                      "  Total Current Assets",
+    "cashAndCashEquivalentsAtCarryingValue":    "    Cash & Cash Equivalents",
+    "cashAndShortTermInvestments":             "    Cash & Short-Term Investments",
+    "currentNetReceivables":                   "    Net Receivables",
+    "inventory":                               "    Inventory",
+    "otherCurrentAssets":                      "    Other Current Assets",
+    "totalNonCurrentAssets":                   "  Total Non-Current Assets",
+    "propertyPlantEquipmentNet":               "    PP&E, Net",
+    "goodwill":                                "    Goodwill",
+    "intangibleAssets":                        "    Intangible Assets",
+    "longTermInvestments":                     "    Long-Term Investments",
+    "otherNonCurrentAssets":                   "    Other Non-Current Assets",
+    "totalLiabilities":                        "Total Liabilities",
+    "totalCurrentLiabilities":                 "  Total Current Liabilities",
+    "currentAccountsPayable":                  "    Accounts Payable",
+    "shortTermDebt":                           "    Short-Term Debt",
+    "deferredRevenue":                         "    Deferred Revenue",
+    "otherCurrentLiabilities":                 "    Other Current Liabilities",
+    "totalNonCurrentLiabilities":              "  Total Non-Current Liabilities",
+    "longTermDebt":                            "    Long-Term Debt",
+    "capitalLeaseObligations":                 "    Capital Lease Obligations",
+    "otherNonCurrentLiabilities":              "    Other Non-Current Liabilities",
+    "totalShareholderEquity":                  "Total Shareholders\' Equity",
+    "commonStock":                             "  Common Stock",
+    "retainedEarnings":                        "  Retained Earnings",
+    "treasuryStock":                           "  Treasury Stock",
+    "shortLongTermDebtTotal":                  "Total Debt (Short + Long-Term)",
+}
+
+_BS_ORDER: List[str] = [
+    "totalAssets",
+    "totalCurrentAssets",
+    "cashAndCashEquivalentsAtCarryingValue", "cashAndShortTermInvestments",
+    "currentNetReceivables", "inventory", "otherCurrentAssets",
+    "totalNonCurrentAssets",
+    "propertyPlantEquipmentNet", "goodwill", "intangibleAssets",
+    "longTermInvestments", "otherNonCurrentAssets",
+    "totalLiabilities",
+    "totalCurrentLiabilities",
+    "currentAccountsPayable", "shortTermDebt", "deferredRevenue",
+    "otherCurrentLiabilities",
+    "totalNonCurrentLiabilities",
+    "longTermDebt", "capitalLeaseObligations", "otherNonCurrentLiabilities",
+    "totalShareholderEquity",
+    "commonStock", "retainedEarnings", "treasuryStock",
+    "shortLongTermDebtTotal",
+]
+
+_RATIO_CATEGORIES: Dict[str, List[str]] = {
+    "PROFITABILITY": [
+        "Gross Margin %", "Operating Margin %", "Net Margin %",
+        "EBITDA Margin %", "FCF Margin %",
+    ],
+    "CAPITAL EFFICIENCY": [
+        "ROIC %  (NOPAT / Invested Capital)",
+        "ROE %  (Net Income / Equity)",
+        "ROA %  (Net Income / Total Assets)",
+        "ROCE %  (EBIT / Capital Employed)",
+    ],
+    "LIQUIDITY": ["Current Ratio", "Quick Ratio"],
+    "LEVERAGE & COVERAGE": [
+        "Debt / Equity", "Net Debt / EBITDA", "Interest Coverage (x)",
+    ],
+    "CASH FLOW QUALITY": [
+        "CFO / Net Income", "FCF / CFO",
+        "FCF Yield %  [vs. Current Mkt Cap]",
+    ],
+    "VALUATION  ⚠  Current Mkt Cap vs. Historical Fundamentals": [
+        "P/E  [Curr. Mkt Cap / Hist. Net Income]",
+        "P/S  [Curr. Mkt Cap / Hist. Revenue]",
+        "P/B  [Curr. Mkt Cap / Hist. Book Value]",
+        "EV/EBITDA  [Curr. EV / Hist. EBITDA]",
+    ],
+}
+
+_KEY_METRICS: frozenset = frozenset({
+    "Total Revenue",
+    "Gross Profit",
+    "Operating Income (EBIT)",
+    "EBITDA",
+    "Net Income",
+    "Cash from Operations (CFO)",
+    "Free Cash Flow (FCF)",
+    "Total Assets",
+    "Total Liabilities",
+    "Total Shareholders\' Equity",
+    "Total Debt (Short + Long-Term)",
+})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA FETCHING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_api_data(url: str, label: str) -> Optional[Dict[str, Any]]:
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        data: Dict[str, Any] = resp.json()
+
+        if "Error Message" in data:
+            print(f"  [ERROR]      {label}: {data['Error Message']}")
+            return None
+        if "Note" in data:
+            print(f"  [RATE LIMIT] {label}: API call frequency exceeded.")
+            print("  Upgrade to a paid Alpha Vantage plan or wait 60 s.")
+            return None
+        if "Information" in data:
+            print(f"  [INFO]       {label}: {data['Information']}")
+            return None
+        return data
+
+    except requests.exceptions.Timeout:
+        print(f"  [TIMEOUT]    {label}")
+        return None
+    except requests.exceptions.RequestException as exc:
+        print(f"  [ERROR]      {label}: {exc}")
+        return None
+
+def fetch_treasury_yield(api_key: str) -> Optional[float]:
+    url = f"{API_BASE_URL}?function=TREASURY_YIELD&interval=daily&maturity=10year&apikey={api_key}"
+    data = fetch_api_data(url, "10-Year Treasury Yield")
+    if data and "data" in data and data["data"]:
+        # Get the latest yield
+        latest_yield = float(data["data"][0]["value"])
+        return latest_yield / 100 # Convert to decimal
+    return None
+
+def fetch_all_financial_data(ticker: str, api_key: str) -> Dict[str, Any]:
+    endpoints = [
+        ("income",   f"{API_BASE_URL}?function=INCOME_STATEMENT&symbol={ticker}&apikey={api_key}"),
+        ("balance",  f"{API_BASE_URL}?function=BALANCE_SHEET&symbol={ticker}&apikey={api_key}"),
+        ("cashflow", f"{API_BASE_URL}?function=CASH_FLOW&symbol={ticker}&apikey={api_key}"),
+        ("overview", f"{API_BASE_URL}?function=OVERVIEW&symbol={ticker}&apikey={api_key}"),
+    ]
+
+    results: Dict[str, Any] = {}
+    for label, url in endpoints:
+        print(f"  Fetching {label}...")
+        data = fetch_api_data(url, label)
+        if data:
+            results[label] = data
+        time.sleep(API_DELAY_SEC)
+    return results
+
+
+def process_raw_reports(reports: List[Dict[str, Any]]) -> pd.DataFrame:
+    processed_data: Dict[str, Dict[str, float]] = {}
+    for report in reports:
+        fiscal_date = report.get("fiscalDateEnding")
+        if not fiscal_date: continue
+
+        processed_data[fiscal_date] = {
+            k: float(v) if isinstance(v, (int, float, str)) and str(v).replace('.', '', 1).isdigit() else 0.0
+            for k, v in report.items() if k != "fiscalDateEnding"
+        }
+
+    df = pd.DataFrame.from_dict(processed_data, orient="index")
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index(ascending=False)
+    return df
+
+
+def calculate_financial_metrics(
+    df_inc: pd.DataFrame,
+    df_bal: pd.DataFrame,
+    df_cf:  pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+
+    # --- Income Statement --- #
+    if not df_inc.empty:
+        df_inc["_gross_margin"] = df_inc["grossProfit"] / df_inc["totalRevenue"]
+        df_inc["_operating_margin"] = df_inc["operatingIncome"] / df_inc["totalRevenue"]
+        df_inc["_net_margin"] = df_inc["netIncome"] / df_inc["totalRevenue"]
+
+        # YoY Growth (Current / Previous - 1)
+        # Since index is sorted descending (latest first), pct_change(periods=-1) gives (latest - previous) / previous
+        df_inc["_rev_yoy"] = df_inc["totalRevenue"].pct_change(periods=-1)
+        df_inc["_opinc_yoy"] = df_inc["operatingIncome"].pct_change(periods=-1)
+        df_inc["_ni_yoy"] = df_inc["netIncome"].pct_change(periods=-1)
+
+    # --- Cash Flow Statement --- #
+    if not df_cf.empty:
+        df_cf["freeCashFlow"] = df_cf["operatingCashflow"] - df_cf["capitalExpenditures"]
+        if not df_inc.empty:
+            df_cf["_fcf_margin"] = df_cf["freeCashFlow"] / df_inc["totalRevenue"]
+
+    # --- Balance Sheet --- #
+    if not df_bal.empty:
+        df_bal["shortLongTermDebtTotal"] = df_bal["shortTermDebt"] + df_bal["longTermDebt"]
+
+    return df_inc, df_bal, df_cf
+
+
+def calculate_valuation_metrics(
+    df_inc:   pd.DataFrame,
+    df_bal:   pd.DataFrame,
+    df_cf:    pd.DataFrame,
+    overview: Dict[str, Any],
+) -> pd.DataFrame:
+    ratios_data: Dict[str, Dict[str, float]] = {}
+
+    mkt_cap = float(overview.get("MarketCapitalization", 0) or 0)
+    enterprise_value = float(overview.get("EnterpriseValue", 0) or 0)
+
+    for date in df_inc.index:
+        date_str = str(date)[:10]
+        ratios_data[date_str] = {}
+
+        # Profitability
+        ratios_data[date_str]["Gross Margin %"] = df_inc.loc[date, "_gross_margin"]
+        ratios_data[date_str]["Operating Margin %"] = df_inc.loc[date, "_operating_margin"]
+        ratios_data[date_str]["Net Margin %"] = df_inc.loc[date, "_net_margin"]
+        ratios_data[date_str]["EBITDA Margin %"] = (
+            df_inc.loc[date, "ebitda"] / df_inc.loc[date, "totalRevenue"]
+            if df_inc.loc[date, "totalRevenue"] != 0 else 0
+        )
+        if date in df_cf.index:
+            ratios_data[date_str]["FCF Margin %"] = df_cf.loc[date, "_fcf_margin"]
+
+        # Capital Efficiency
+        if date in df_bal.index:
+            invested_capital = df_bal.loc[date, "totalShareholderEquity"] + df_bal.loc[date, "shortLongTermDebtTotal"]
+            ratios_data[date_str]["ROIC %  (NOPAT / Invested Capital)"] = (
+                df_inc.loc[date, "netIncome"] / invested_capital
+                if invested_capital != 0 else 0
+            )
+            ratios_data[date_str]["ROE %  (Net Income / Equity)"] = (
+                df_inc.loc[date, "netIncome"] / df_bal.loc[date, "totalShareholderEquity"]
+                if df_bal.loc[date, "totalShareholderEquity"] != 0 else 0
+            )
+            ratios_data[date_str]["ROA %  (Net Income / Total Assets)"] = (
+                df_inc.loc[date, "netIncome"] / df_bal.loc[date, "totalAssets"]
+                if df_bal.loc[date, "totalAssets"] != 0 else 0
+            )
+            capital_employed = df_bal.loc[date, "totalAssets"] - df_bal.loc[date, "totalCurrentLiabilities"]
+            ratios_data[date_str]["ROCE %  (EBIT / Capital Employed)"] = (
+                df_inc.loc[date, "operatingIncome"] / capital_employed
+                if capital_employed != 0 else 0
+            )
+
+            # Liquidity
+            ratios_data[date_str]["Current Ratio"] = (
+                df_bal.loc[date, "totalCurrentAssets"] / df_bal.loc[date, "totalCurrentLiabilities"]
+                if df_bal.loc[date, "totalCurrentLiabilities"] != 0 else 0
+            )
+            ratios_data[date_str]["Quick Ratio"] = (
+                (df_bal.loc[date, "cashAndCashEquivalentsAtCarryingValue"] + df_bal.loc[date, "currentNetReceivables"]) /
+                df_bal.loc[date, "totalCurrentLiabilities"]
+                if df_bal.loc[date, "totalCurrentLiabilities"] != 0 else 0
+            )
+
+            # Leverage & Coverage
+            ratios_data[date_str]["Debt / Equity"] = (
+                df_bal.loc[date, "shortLongTermDebtTotal"] / df_bal.loc[date, "totalShareholderEquity"]
+                if df_bal.loc[date, "totalShareholderEquity"] != 0 else 0
+            )
+            ratios_data[date_str]["Net Debt / EBITDA"] = (
+                (df_bal.loc[date, "shortLongTermDebtTotal"] - df_bal.loc[date, "cashAndCashEquivalentsAtCarryingValue"]) /
+                df_inc.loc[date, "ebitda"]
+                if df_inc.loc[date, "ebitda"] != 0 else 0
+            )
+            ratios_data[date_str]["Interest Coverage (x)"] = (
+                df_inc.loc[date, "ebitda"] / df_inc.loc[date, "interestExpense"]
+                if df_inc.loc[date, "interestExpense"] != 0 else 0
+            )
+
+        # Cash Flow Quality
+        if date in df_cf.index:
+            ratios_data[date_str]["CFO / Net Income"] = (
+                df_cf.loc[date, "operatingCashflow"] / df_inc.loc[date, "netIncome"]
+                if df_inc.loc[date, "netIncome"] != 0 else 0
+            )
+            ratios_data[date_str]["FCF / CFO"] = (
+                df_cf.loc[date, "freeCashFlow"] / df_cf.loc[date, "operatingCashflow"]
+                if df_cf.loc[date, "operatingCashflow"] != 0 else 0
+            )
+            ratios_data[date_str]["FCF Yield %  [vs. Current Mkt Cap]"] = (
+                df_cf.loc[date, "freeCashFlow"] / mkt_cap
+                if mkt_cap != 0 else 0
+            )
+
+        # Valuation
+        ratios_data[date_str]["P/E  [Curr. Mkt Cap / Hist. Net Income]"] = (
+            mkt_cap / df_inc.loc[date, "netIncome"]
+            if df_inc.loc[date, "netIncome"] != 0 else 0
+        )
+        ratios_data[date_str]["P/S  [Curr. Mkt Cap / Hist. Revenue]"] = (
+            mkt_cap / df_inc.loc[date, "totalRevenue"]
+            if df_inc.loc[date, "totalRevenue"] != 0 else 0
+        )
+        if date in df_bal.index:
+            ratios_data[date_str]["P/B  [Curr. Mkt Cap / Hist. Book Value]"] = (
+                mkt_cap / df_bal.loc[date, "totalShareholderEquity"]
+                if df_bal.loc[date, "totalShareholderEquity"] != 0 else 0
+            )
+        ratios_data[date_str]["EV/EBITDA  [Curr. EV / Hist. EBITDA]"] = (
+            enterprise_value / df_inc.loc[date, "ebitda"]
+            if df_inc.loc[date, "ebitda"] != 0 else 0
+        )
+
+    ratios_df = pd.DataFrame.from_dict(ratios_data, orient="index")
+    return ratios_df
+
+
+def build_labeled_df(df: pd.DataFrame, order: List[str], labels: Dict[str, str]) -> pd.DataFrame:
+    display_rows = []
+    for item in order:
+        if item in df.columns:
+            display_rows.append(df.loc[:, item].rename(labels.get(item, item)))
+    return pd.DataFrame(display_rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXCEL FORMATTING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_formats(wb: xlsxwriter.Workbook) -> Dict[str, Any]:
+    return {
+        "dash_title":    wb.add_format({"font_size": 20, "bold": True, "font_color": C["dark_blue"], "align": "left", "valign": "vcenter"}),
+        "dash_sub":      wb.add_format({"font_size": 11, "bold": False, "font_color": C["mid_blue"],  "align": "left", "valign": "vcenter"}),
+        "dash_kpi_lbl":  wb.add_format({"font_size": 10, "bold": True, "font_color": C["white"], "bg_color": C["dark_blue"], "align": "center", "valign": "vcenter", "border": 1}),
+        "dash_kpi_val":  wb.add_format({"font_size": 14, "bold": True, "font_color": C["dark_blue"], "bg_color": C["light_grey"], "align": "center", "valign": "vcenter", "border": 1, "num_format": "#,##0"}),
+        "dash_kpi_val_pct": wb.add_format({"font_size": 14, "bold": True, "font_color": C["dark_blue"], "bg_color": C["light_grey"], "align": "center", "valign": "vcenter", "border": 1, "num_format": "0.0%"}),
+        "dash_desc":     wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "top", "text_wrap": True}),
+        "dash_spark_lbl":wb.add_format({"font_size": 10, "bold": True, "font_color": C["text_primary"], "align": "left", "valign": "vcenter"}),
+        "dash_highlight":wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "vcenter"}),
+
+        "sub_hdr":       wb.add_format({"font_size": 12, "bold": True, "font_color": C["dark_blue"], "bg_color": C["pale_blue"], "align": "left", "valign": "vcenter", "indent": 1}),
+        "col_hdr":       wb.add_format({"font_size": 10, "bold": True, "font_color": C["text_primary"], "bg_color": C["light_grey"], "align": "center", "valign": "vcenter"}),
+
+        "key_lbl":       wb.add_format({"font_size": 10, "bold": True, "font_color": C["dark_blue"], "bg_color": C["pale_blue"], "align": "left", "valign": "vcenter", "indent": 1}),
+        "key_num":       wb.add_format({"font_size": 10, "bold": True, "font_color": C["dark_blue"], "bg_color": C["pale_blue"], "align": "right", "valign": "vcenter", "num_format": "#,##0"}),
+
+        "pct_lbl":       wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "vcenter", "indent": 2}),
+        "pct_num":       wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "0.0%"}),
+
+        "yoy_lbl":       wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "vcenter", "indent": 2}),
+        "yoy_num":       wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "0.0%"}),
+
+        "std_lbl":       wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "vcenter", "indent": 1}),
+        "std_lbl_i1":    wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "vcenter", "indent": 2}),
+        "std_lbl_i2":    wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "vcenter", "indent": 3}),
+        "std_num":       wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "#,##0"}),
+
+        "ratio_sec":     wb.add_format({"font_size": 11, "bold": True, "font_color": C["dark_blue"], "bg_color": C["pale_blue"], "align": "left", "valign": "vcenter", "indent": 1}),
+        "ratio_lbl":     wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "vcenter", "indent": 1}),
+        "ratio_pct":     wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "0.0%"}),
+        "ratio_mult":    wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "0.0\"x\""}),
+        "ratio_num":     wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "#,##0.0"}),
+
+        "val_hdr":       wb.add_format({"font_size": 12, "bold": True, "font_color": C["dark_blue"], "bg_color": C["pale_blue"], "align": "left", "valign": "vcenter", "indent": 1}),
+        "val_lbl":       wb.add_format({"font_size": 10, "bold": True, "font_color": C["text_primary"], "align": "left", "valign": "vcenter", "indent": 1}),
+        "val_num":       wb.add_format({"font_size": 10, "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "#,##0"}),
+        "val_pct":       wb.add_format({"font_size": 10, "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "0.0%"}),
+        "val_sens_hdr":  wb.add_format({"font_size": 9,  "bold": True, "font_color": C["text_primary"], "bg_color": C["light_grey"], "align": "center", "valign": "vcenter"}),
+        "val_sens_lbl":  wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "left", "valign": "vcenter"}),
+        "val_sens_num":  wb.add_format({"font_size": 9,  "bold": False, "font_color": C["text_primary"], "align": "right", "valign": "vcenter", "num_format": "#,##0"}),
+        "val_box":       wb.add_format({"border": 2, "border_color": C["dark_blue"]}),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROW CLASSIFICATION HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _row_type(label: str) -> str:
+    if label in _KEY_METRICS:
+        return "key"
+    lw = label.lower()
+    if "yoy" in lw:
+        return "yoy"
+    if "margin %" in lw:
+        return "pct"
+    spaces = len(label) - len(label.lstrip())
+    if spaces >= 4:
+        return "indent2"
+    if spaces >= 2:
+        return "indent1"
+    return "standard"
+
+
+def _group_level(label: str) -> int:
+    spaces = len(label) - len(label.lstrip())
+    if spaces >= 4:
+        return 2
+    if spaces >= 2:
+        return 1
+    return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DASHBOARD SHEET
+# ─────────────────────────────────────────────────────────────────────────────
+
+def format_excel_dashboard(
+    wb:       xlsxwriter.Workbook,
+    ws:       Any,
+    ticker:   str,
+    overview: Dict[str, Any],
+    df_inc_a: pd.DataFrame,
+    df_cf_a:  pd.DataFrame,
+    ratios_df: pd.DataFrame,
+    fmt:      Dict[str, Any],
+) -> None:
+    ws.hide_gridlines(2)
+    ws.set_zoom(90)
+
+    ws.set_column("A:A", 2)
+    ws.set_column("B:G", 18)
+    ws.set_column("H:H", 3)
+    ws.set_column("I:N", 18)
+
+    name     = overview.get("Name",     ticker)
+    exchange = overview.get("Exchange", "")
+    sector   = overview.get("Sector",   "")
+    industry = overview.get("Industry", "")
+
+    ws.set_row(0, 8)
+    ws.set_row(1, 36)
+    ws.merge_range("B2:G2", f"{name}  ({ticker})   ·   {exchange}", fmt["dash_title"])
+    ws.set_row(2, 16)
+    ws.merge_range("B3:G3", f"{sector}   |   {industry}", fmt["dash_sub"])
+
+    # Priority 3: KPI Cards
+    ws.set_row(4, 20)
+    ws.set_row(5, 25)
+    
+    mkt_cap_raw = float(overview.get("MarketCapitalization") or 0)
+    rev_latest = df_inc_a.iloc[0]["totalRevenue"] if not df_inc_a.empty else 0
+    ebitda_latest = df_inc_a.iloc[0]["ebitda"] if not df_inc_a.empty else 0
+    ni_latest = df_inc_a.iloc[0]["netIncome"] if not df_inc_a.empty else 0
+    fcf_latest = df_cf_a.iloc[0]["freeCashFlow"] if not df_cf_a.empty else 0
+    roic_latest = ratios_df.iloc[0]["ROIC %  (NOPAT / Invested Capital)"] if not ratios_df.empty else 0
+
+    kpis = [
+        ("Revenue", rev_latest / 1e6, fmt["dash_kpi_val"]),
+        ("EBITDA", ebitda_latest / 1e6, fmt["dash_kpi_val"]),
+        ("Net Income", ni_latest / 1e6, fmt["dash_kpi_val"]),
+        ("ROIC %", roic_latest, fmt["dash_kpi_val_pct"]),
+        ("FCF", fcf_latest / 1e6, fmt["dash_kpi_val"]),
+        ("Market Cap", mkt_cap_raw / 1e6, fmt["dash_kpi_val"]),
+    ]
+
+    for i, (lbl, val, v_fmt) in enumerate(kpis):
+        ws.write(4, i + 1, lbl, fmt["dash_kpi_lbl"])
+        ws.write(5, i + 1, val, v_fmt)
+
+    ws.set_row(6, 8)
+    ws.set_row(7, 18)
+    ws.merge_range("B8:G8", "Business Overview", fmt["sub_hdr"])
+    ws.set_row(8, 85)
+    ws.merge_range("B9:G9", overview.get("Description", "—"), fmt["dash_desc"])
+
+    # Key Investment Highlights
+    ws.set_row(10, 18)
+    ws.merge_range("B11:G11", "Key Investment Highlights", fmt["sub_hdr"])
+
+    def _ov(key: str) -> str:
+        v = overview.get(key)
+        return str(v) if v and v != "None" else "—"
+
+    def _shares(key: str) -> str:
+        v = float(overview.get(key) or 0)
+        return f"{v / 1e6:.0f}M" if v else "—"
+
+    highlights = [
+        f"Fiscal Year End: {_ov('FiscalYearEnd')}   |   CIK: {_ov('CIK')}",
+        f"Analyst Target Price: {_ov('AnalystTargetPrice')}   |   Beta: {_ov('Beta')}",
+        f"52-Week Range: {_ov('52WeekLow')} – {_ov('52WeekHigh')}",
+        f"PEG Ratio: {_ov('PEGRatio')}   |   Book Value / Share: {_ov('BookValue')}",
+        f"Shares Outstanding: {_shares('SharesOutstanding')}   |   Float: {_shares('SharesFloat')}",
+    ]
+    for k, hl in enumerate(highlights):
+        r = 11 + k
+        ws.set_row(r, 15)
+        ws.merge_range(r, 1, r, 6, hl, fmt["dash_highlight"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FINANCIAL STATEMENT SHEETS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def format_excel_financials(
+    wb:    xlsxwriter.Workbook,
+    ws:    Any,
+    df:    pd.DataFrame,
+    fmt:   Dict[str, Any],
+    title: str,
+) -> None:
+    ws.hide_gridlines(2)
+    ws.freeze_panes(2, 1)
+    ws.set_zoom(90)
+
+    n_cols = len(df.columns)
+    ws.set_column(0, 0, 44)
+    for c in range(n_cols):
+        ws.set_column(c + 1, c + 1, 16)
+
+    ws.set_row(0, 20)
+    ws.merge_range(0, 0, 0, n_cols, title, fmt["sub_hdr"])
+
+    ws.set_row(1, 18)
+    ws.write(1, 0, "USD Millions  (except per-share & ratio rows)", fmt["col_hdr"])
+    for ci, col_date in enumerate(df.columns):
+        ws.write(1, ci + 1, str(col_date)[:10], fmt["col_hdr"])
+
+    yoy_excel_rows: List[int] = []
+
+    for ri, (label, row_data) in enumerate(df.iterrows()):
+        excel_row  = ri + 2
+        rtype      = _row_type(str(label))
+        lvl        = _group_level(str(label))
+
+        if rtype == "key":
+            lf, nf, row_h = fmt["key_lbl"],    fmt["key_num"],  18
+            lvl = 0
+        elif rtype == "pct":
+            lf, nf, row_h = fmt["pct_lbl"],    fmt["pct_num"],  15
+            lvl = max(lvl, 1)
+        elif rtype == "yoy":
+            lf, nf, row_h = fmt["yoy_lbl"],    fmt["yoy_num"],  15
+            lvl = max(lvl, 1)
+            yoy_excel_rows.append(excel_row)
+        elif rtype == "indent2":
+            lf, nf, row_h = fmt["std_lbl_i2"], fmt["std_num"],  15
+        elif rtype == "indent1":
+            lf, nf, row_h = fmt["std_lbl_i1"], fmt["std_num"],  15
+        else:
+            lf, nf, row_h = fmt["std_lbl"],    fmt["std_num"],  16
+            lvl = 0
+
+        row_opts = {"level": lvl} if lvl > 0 else {}
+        ws.set_row(excel_row, row_h, None, row_opts)
+        ws.write(excel_row, 0, str(label), lf)
+
+        for ci, val in enumerate(row_data):
+            if pd.isna(val) or val in (float("inf"), float("-inf")):
+                ws.write(excel_row, ci + 1, "—", nf)
+            else:
+                # Priority 1: Standardize currency values to Millions with 0 decimal places
+                if rtype in ["key", "standard", "indent1", "indent2"] and "Share" not in str(label) and "EPS" not in str(label):
+                    ws.write(excel_row, ci + 1, round(float(val) / 1e6), nf)
+                else:
+                    ws.write(excel_row, ci + 1, float(val), nf)
+
+    if yoy_excel_rows and n_cols > 1:
+        for yr in yoy_excel_rows:
+            ws.conditional_format(
+                yr, 1, yr, n_cols,
+                {
+                    "type":      "3_color_scale",
+                    "min_color": C["neg_red_fill"],
+                    "mid_color": C["neutral_fill"],
+                    "max_color": C["pos_green_fill"],
+                    "min_type":  "percentile", "min_value": 10,
+                    "mid_type":  "percentile", "mid_value": 50,
+                    "max_type":  "percentile", "max_value": 90,
+                },
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FINANCIAL RATIOS SHEET
+# ─────────────────────────────────────────────────────────────────────────────
+
+def format_excel_ratios(
+    wb:     xlsxwriter.Workbook,
+    ws:     Any,
+    ratios: pd.DataFrame,
+    fmt:    Dict[str, Any],
+) -> None:
+    ws.hide_gridlines(2)
+    ws.freeze_panes(2, 1)
+    ws.set_zoom(90)
+
+    n_periods = len(ratios.index)
+    ws.set_column(0, 0, 52)
+    for c in range(n_periods):
+        ws.set_column(c + 1, c + 1, 18)
+
+    ws.set_row(0, 20)
+    ws.merge_range(0, 0, 0, n_periods, "Financial Ratios & Valuation Metrics", fmt["sub_hdr"])
+    ws.set_row(1, 18)
+    ws.write(1, 0, "Metric", fmt["col_hdr"])
+    for ci, period in enumerate(ratios.index):
+        ws.write(1, ci + 1, str(period)[:10], fmt["col_hdr"])
+
+    _PCT  = {"margin", "yield", "roe", "roa", "roic", "roce", "fcf %", "yield %"}
+    _MULT = {"p/e", "p/s", "p/b", "ev/ebitda", "coverage", "cfo /", "fcf / cfo"}
+
+    def _num_fmt(metric: str) -> Any:
+        ml = metric.lower()
+        if any(k in ml for k in _PCT) or "%" in metric:
+            return fmt["ratio_pct"]
+        if any(k in ml for k in _MULT):
+            return fmt["ratio_mult"]
+        return fmt["ratio_num"]
+
+    current_row = 2
+    for section, metrics in _RATIO_CATEGORIES.items():
+        ws.set_row(current_row, 18)
+        ws.merge_range(current_row, 0, current_row, n_periods, section, fmt["ratio_sec"])
+        current_row += 1
+
+        for metric in metrics:
+            ws.set_row(current_row, 16)
+            ws.write(current_row, 0, metric, fmt["ratio_lbl"])
+            nf = _num_fmt(metric)
+            for ci, period in enumerate(ratios.index):
+                if metric in ratios.columns:
+                    val = ratios.at[period, metric]
+                    if val is None or (isinstance(val, float) and (pd.isna(val) or abs(val) == float("inf"))):
+                        ws.write(current_row, ci + 1, "—", nf)
+                    else:
+                        ws.write(current_row, ci + 1, float(val), nf)
+                else:
+                    ws.write(current_row, ci + 1, "—", nf)
+            current_row += 1
+
+    # Banding for alternating row colors
+    for row_num in range(2, current_row):
+        if row_num % 2 == 0:
+            ws.set_row(row_num, None, wb.add_format({'bg_color': C["pale_blue"]}))
+
+    # Conditional formatting for ROIC > 15%
+    roic_row_label = "ROIC %  (NOPAT / Invested Capital)"
+    roic_row_in_excel = -1
+    current_excel_row = 2
+    for section, metrics in _RATIO_CATEGORIES.items():
+        current_excel_row += 1 # For section header
+        for metric in metrics:
+            if metric == roic_row_label:
+                roic_row_in_excel = current_excel_row
+                break
+            current_excel_row += 1
+        if roic_row_in_excel != -1:
+            break
+
+    if roic_row_in_excel != -1:
+        ws.conditional_format(
+            roic_row_in_excel, 1, roic_row_in_excel, n_periods,
+            {
+                'type':     'cell',
+                'criteria': '>',
+                'value':    0.15,
+                'format':   wb.add_format({'bg_color': C["pos_green_fill"], 'font_color': C["pos_green"]})
+            }
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHARTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def add_professional_charts(
+    wb:       xlsxwriter.Workbook,
+    ws:       Any,
+    df_inc_a: pd.DataFrame,
+    df_cf_a:  pd.DataFrame,
+    ratios:   pd.DataFrame,
+    fmt:      Dict[str, Any],
+) -> None:
+    # Priority 3: Large Clustered Column Charts
+    chart_data_ws = wb.add_worksheet('ChartData')
+    
+    # 1. Revenue & Net Income Trend
+    chart1 = wb.add_chart({'type': 'column'})
+    chart1.set_title({'name': 'Revenue & Net Income Trend'})
+    
+    years = [str(d.year) for d in df_inc_a.index[:5]][::-1]
+    rev_data = [v / 1e6 for v in df_inc_a.iloc[:5]['totalRevenue'].tolist()][::-1]
+    ni_data = [v / 1e6 for v in df_inc_a.iloc[:5]['netIncome'].tolist()][::-1]
+
+    chart_data_ws.write_row('A1', ['Year'] + years)
+    chart_data_ws.write_row('A2', ['Revenue'] + rev_data)
+    chart_data_ws.write_row('A3', ['Net Income'] + ni_data)
+
+    chart1.add_series({
+        'name':       '=ChartData!$A$2',
+        'categories': '=ChartData!$B$1:$F$1',
+        'values':     '=ChartData!$B$2:$F$2',
+        'fill':       {'color': C["mid_blue"]},
+    })
+    
+    line_chart = wb.add_chart({'type': 'line'})
+    line_chart.add_series({
+        'name':       '=ChartData!$A$3',
+        'categories': '=ChartData!$B$1:$F$1',
+        'values':     '=ChartData!$B$3:$F$3',
+        'line':       {'color': C["pos_green"], 'width': 2},
+        'marker':     {'type': 'circle', 'size': 5},
+        'y2_axis':    True,
+    })
+    chart1.combine(line_chart)
+    chart1.set_y_axis({'name': 'Revenue (Millions)'})
+    chart1.set_y2_axis({'name': 'Net Income (Millions)'})
+    
+    ws.insert_chart('I2', chart1, {'x_scale': 1.5, 'y_scale': 1.2})
+
+    # 2. Profitability Margins
+    chart2 = wb.add_chart({'type': 'line'})
+    chart2.set_title({'name': 'Profitability Margins'})
+    
+    gm_data = [v for v in df_inc_a.iloc[:5]['_gross_margin'].tolist()][::-1]
+    om_data = [v for v in df_inc_a.iloc[:5]['_operating_margin'].tolist()][::-1]
+    nm_data = [v for v in df_inc_a.iloc[:5]['_net_margin'].tolist()][::-1]
+
+    chart_data_ws.write_row('A5', ['Gross Margin'] + gm_data)
+    chart_data_ws.write_row('A6', ['Operating Margin'] + om_data)
+    chart_data_ws.write_row('A7', ['Net Margin'] + nm_data)
+
+    chart2.add_series({
+        'name':       '=ChartData!$A$5',
+        'categories': '=ChartData!$B$1:$F$1',
+        'values':     '=ChartData!$B$5:$F$5',
+        'line':       {'color': C["dark_blue"]},
+    })
+    chart2.add_series({
+        'name':       '=ChartData!$A$6',
+        'categories': '=ChartData!$B$1:$F$1',
+        'values':     '=ChartData!$B$6:$F$6',
+        'line':       {'color': C["mid_blue"]},
+    })
+    chart2.add_series({
+        'name':       '=ChartData!$A$7',
+        'categories': '=ChartData!$B$1:$F$1',
+        'values':     '=ChartData!$B$7:$F$7',
+        'line':       {'color': C["pos_green"]},
+    })
+    chart2.set_y_axis({'num_format': '0%'})
+    ws.insert_chart('I18', chart2, {'x_scale': 1.5, 'y_scale': 1.2})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VALUATION ENGINE (Buffett-Style DCF)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def calculate_intrinsic_value(
+    df_inc_a:        pd.DataFrame,
+    df_cf_a:         pd.DataFrame,
+    overview:        Dict[str, Any],
+    treasury_yield:  float,
+) -> Dict[str, Any]:
+    results: Dict[str, Any] = {}
+
+    if not df_cf_a.empty and len(df_cf_a) >= 3:
+        base_fcf = df_cf_a['freeCashFlow'].head(3).mean()
+    else:
+        base_fcf = 0.0
+
+    if not df_inc_a.empty and '_rev_yoy' in df_inc_a.columns and len(df_inc_a) >= 5:
+        growth_rate = df_inc_a['_rev_yoy'].head(5).mean()
+        growth_rate = min(max(growth_rate, 0.02), 0.15) 
+    else:
+        growth_rate = 0.05
+
+    equity_risk_premium = 0.05 
+    cost_of_equity = treasury_yield + equity_risk_premium
+    discount_rate = cost_of_equity
+    terminal_growth_rate = 0.025
+    projection_years = 10
+
+    projected_fcf = [base_fcf * ((1 + growth_rate) ** i) for i in range(1, projection_years + 1)]
+    discount_factors = [(1 / ((1 + discount_rate) ** i)) for i in range(1, projection_years + 1)]
+    pv_fcf = [fcf * df for fcf, df in zip(projected_fcf, discount_factors)]
+    sum_pv_fcf = sum(pv_fcf)
+
+    terminal_value = (projected_fcf[-1] * (1 + terminal_growth_rate)) / (discount_rate - terminal_growth_rate)
+    pv_terminal_value = terminal_value / ((1 + discount_rate) ** projection_years)
+    intrinsic_value = sum_pv_fcf + pv_terminal_value
+
+    results.update({
+        "Base FCF (Last 3Y Avg)": base_fcf,
+        "Growth Rate (5Y Avg Rev YoY, capped 15%)": growth_rate,
+        "10Y Treasury Yield (Risk-Free Rate)": treasury_yield,
+        "Equity Risk Premium": equity_risk_premium,
+        "Discount Rate (Simplified WACC)": discount_rate,
+        "Terminal Growth Rate": terminal_growth_rate,
+        "Projected FCF (Sum PV)": sum_pv_fcf,
+        "Terminal Value (PV)": pv_terminal_value,
+        "Calculated Intrinsic Value": intrinsic_value
+    })
+
+    sensitivity_table: Dict[str, Dict[str, float]] = {}
+    rate_variations = [-0.01, 0, 0.01] 
+    for dr_change in rate_variations:
+        sens_dr = discount_rate + dr_change
+        if sens_dr <= terminal_growth_rate: sens_dr = terminal_growth_rate + 0.001
+        
+        sens_pv_fcf = sum([base_fcf * ((1 + growth_rate) ** i) / ((1 + sens_dr) ** i) for i in range(1, projection_years + 1)])
+        sens_tv = (base_fcf * ((1 + growth_rate) ** projection_years) * (1 + terminal_growth_rate)) / (sens_dr - terminal_growth_rate)
+        sens_pv_tv = sens_tv / ((1 + sens_dr) ** projection_years)
+        
+        sensitivity_table[f"DR {dr_change:+.0%}"] = {"Intrinsic Value": sens_pv_fcf + sens_pv_tv}
+
+    results["Sensitivity Analysis"] = pd.DataFrame.from_dict(sensitivity_table, orient="index")
+    return results
+
+
+def format_excel_valuation(
+    wb:       xlsxwriter.Workbook,
+    ws:       Any,
+    valuation_results: Dict[str, Any],
+    overview: Dict[str, Any],
+    fmt:      Dict[str, Any],
+) -> None:
+    ws.hide_gridlines(2)
+    ws.set_zoom(90)
+
+    ws.set_column("A:A", 2)
+    ws.set_column("B:B", 40)
+    ws.set_column("C:C", 20)
+
+    ws.set_row(0, 20)
+    ws.merge_range("B1:C1", "Valuation & DCF Analysis", fmt["sub_hdr"])
+
+    current_row = 2
+    ws.set_row(current_row, 18)
+    ws.merge_range(current_row, 1, current_row, 2, "Valuation Summary", fmt["val_hdr"])
+    current_row += 1
+
+    mkt_cap = float(overview.get("MarketCapitalization", 0) or 0)
+    intrinsic_value = valuation_results.get("Calculated Intrinsic Value", 0)
+    margin_of_safety = (intrinsic_value - mkt_cap) / mkt_cap if mkt_cap != 0 else 0
+
+    ws.write(current_row, 1, "Current Market Capitalization", fmt["val_lbl"])
+    ws.write(current_row, 2, mkt_cap / 1e6, fmt["val_num"])
+    current_row += 1
+
+    ws.write(current_row, 1, "Calculated Intrinsic Value", fmt["val_lbl"])
+    ws.write(current_row, 2, intrinsic_value / 1e6, fmt["val_num"])
+    current_row += 1
+
+    ws.write(current_row, 1, "Margin of Safety", fmt["val_lbl"])
+    ws.write(current_row, 2, margin_of_safety, fmt["val_pct"])
+    
+    # Priority 4: Conditional Coloring for Margin of Safety
+    ws.conditional_format(current_row, 2, current_row, 2, {
+        'type':     'cell',
+        'criteria': '>',
+        'value':    0.20,
+        'format':   wb.add_format({'bg_color': C["pos_green_fill"], 'font_color': C["pos_green"]})
+    })
+    ws.conditional_format(current_row, 2, current_row, 2, {
+        'type':     'cell',
+        'criteria': '<',
+        'value':    0,
+        'format':   wb.add_format({'bg_color': C["neg_red_fill"], 'font_color': C["neg_red"]})
+    })
+    
+    # Visual Box for Intrinsic Value and Margin of Safety
+    ws.conditional_format(current_row - 1, 1, current_row, 2, {'type': 'no_blanks', 'format': fmt["val_box"]})
+    current_row += 2
+
+    # DCF Inputs
+    ws.set_row(current_row, 18)
+    ws.merge_range(current_row, 1, current_row, 2, "DCF Inputs", fmt["val_hdr"])
+    current_row += 1
+
+    ws.write(current_row, 1, "Base FCF (Last 3Y Avg, Millions)", fmt["val_lbl"])
+    ws.write(current_row, 2, valuation_results.get("Base FCF (Last 3Y Avg)", 0) / 1e6, fmt["val_num"])
+    current_row += 1
+
+    ws.write(current_row, 1, "Growth Rate (5Y Avg Rev YoY, capped 15%)", fmt["val_lbl"])
+    ws.write(current_row, 2, valuation_results.get("Growth Rate (5Y Avg Rev YoY, capped 15%)", 0), fmt["val_pct"])
+    current_row += 1
+
+    ws.write(current_row, 1, "Discount Rate (Simplified WACC)", fmt["val_lbl"])
+    ws.write(current_row, 2, valuation_results.get("Discount Rate (Simplified WACC)", 0), fmt["val_pct"])
+    current_row += 2
+
+    # Sensitivity Analysis Table with Heatmap
+    sensitivity_df = valuation_results.get("Sensitivity Analysis")
+    if sensitivity_df is not None and not sensitivity_df.empty:
+        ws.set_row(current_row, 18)
+        ws.merge_range(current_row, 1, current_row, 2 + len(sensitivity_df.index) - 1, "Intrinsic Value Sensitivity (Millions)", fmt["val_hdr"])
+        current_row += 1
+
+        ws.write(current_row, 1, "Discount Rate Change", fmt["val_sens_hdr"])
+        for i, dr_label in enumerate(sensitivity_df.index):
+            ws.write(current_row, 2 + i, dr_label, fmt["val_sens_hdr"])
+        current_row += 1
+
+        ws.write(current_row, 1, "Intrinsic Value", fmt["val_sens_lbl"])
+        for i, dr_label in enumerate(sensitivity_df.index):
+            ws.write(current_row, 2 + i, sensitivity_df.loc[dr_label, "Intrinsic Value"] / 1e6, fmt["val_sens_num"])
+        
+        # Heatmap formatting
+        ws.conditional_format(current_row, 2, current_row, 2 + len(sensitivity_df.index) - 1, {
+            'type': '3_color_scale',
+            'min_color': C["neg_red_fill"],
+            'mid_color': C["neutral_fill"],
+            'max_color': C["pos_green_fill"]
+        })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN ORCHESTRATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    print("=" * 65)
+    print("  Investment Bank Grade Financial Analyzer V4")
+    print("  Powered by Alpha Vantage                     (free tier: 5 rpm)")
+    print("=" * 65)
+
+    ticker  = input("\nEnter stock symbol (e.g., MSFT, AAPL, GOOGL): ").strip().upper()
+    api_key = input("Enter your Alpha Vantage API key              : ").strip()
+
+    if not ticker or not api_key:
+        print("[FATAL] Ticker and API key are required.")
+        sys.exit(1)
+
+    print(f"\nFetching financial data for {ticker}...")
+    raw = fetch_all_financial_data(ticker, api_key)
+    treasury_yield = fetch_treasury_yield(api_key) or 0.04
+
+    income_raw   = raw.get("income")   or {}
+    balance_raw  = raw.get("balance")  or {}
+    cashflow_raw = raw.get("cashflow") or {}
+    overview     = raw.get("overview") or {}
+
+    if not income_raw or "annualReports" not in income_raw:
+        print("\n[FATAL] Could not retrieve income statement data.")
+        sys.exit(1)
+
+    print("\nProcessing financial statements...")
+    df_inc_a = process_raw_reports(income_raw.get("annualReports", []))
+    df_bal_a = process_raw_reports(balance_raw.get("annualReports", []))
+    df_cf_a  = process_raw_reports(cashflow_raw.get("annualReports", []))
+    df_inc_q = process_raw_reports(income_raw.get("quarterlyReports", [])[:8])
+    df_bal_q = process_raw_reports(balance_raw.get("quarterlyReports", [])[:8])
+    df_cf_q  = process_raw_reports(cashflow_raw.get("quarterlyReports", [])[:8])
+
+    print("Calculating metrics and ratios...")
+    df_inc_a, df_bal_a, df_cf_a = calculate_financial_metrics(df_inc_a, df_bal_a, df_cf_a)
+    df_inc_q, df_bal_q, df_cf_q = calculate_financial_metrics(df_inc_q, df_bal_q, df_cf_q)
+    ratios_df = calculate_valuation_metrics(df_inc_a, df_bal_a, df_cf_a, overview)
+    valuation_results = calculate_intrinsic_value(df_inc_a, df_cf_a, overview, treasury_yield)
+
+    print("Preparing display structures...")
+    inc_a_disp = build_labeled_df(df_inc_a, _INCOME_ORDER, _INCOME_LABELS)
+    inc_q_disp = build_labeled_df(df_inc_q, _INCOME_ORDER, _INCOME_LABELS)
+    cf_a_disp  = build_labeled_df(df_cf_a,  _CF_ORDER,     _CF_LABELS)
+    cf_q_disp  = build_labeled_df(df_cf_q,  _CF_ORDER,     _CF_LABELS)
+    bs_a_disp  = build_labeled_df(df_bal_a, _BS_ORDER,     _BS_LABELS)
+    bs_q_disp  = build_labeled_df(df_bal_q, _BS_ORDER,     _BS_LABELS)
+
+    output_file = f"{ticker}_IB_Financial_Report_V4.xlsx"
+    print(f"\nGenerating Excel workbook: {output_file}...")
+
+    wb = xlsxwriter.Workbook(output_file, {"strings_to_numbers": False, "nan_inf_to_errors": True})
+    fmt = _build_formats(wb)
+
+    worksheets = {name: wb.add_worksheet(name) for name in [
+        "Dashboard", "Annual · Income Stmt", "Annual · Balance Sheet", "Annual · Cash Flow",
+        "Qtrly · Income Stmt", "Qtrly · Balance Sheet", "Qtrly · Cash Flow", "Financial Ratios", "Valuation & DCF"
+    ]}
+
+    format_excel_dashboard(wb, worksheets["Dashboard"], ticker, overview, df_inc_a, df_cf_a, ratios_df, fmt)
+    add_professional_charts(wb, worksheets["Dashboard"], df_inc_a, df_cf_a, ratios_df, fmt)
+
+    format_excel_financials(wb, worksheets["Annual · Income Stmt"], inc_a_disp, fmt, f"{ticker} - Annual Income Statement")
+    format_excel_financials(wb, worksheets["Annual · Balance Sheet"], bs_a_disp, fmt, f"{ticker} - Annual Balance Sheet")
+    format_excel_financials(wb, worksheets["Annual · Cash Flow"], cf_a_disp, fmt, f"{ticker} - Annual Cash Flow")
+    format_excel_financials(wb, worksheets["Qtrly · Income Stmt"], inc_q_disp, fmt, f"{ticker} - Quarterly Income Statement")
+    format_excel_financials(wb, worksheets["Qtrly · Balance Sheet"], bs_q_disp, fmt, f"{ticker} - Quarterly Balance Sheet")
+    format_excel_financials(wb, worksheets["Qtrly · Cash Flow"], cf_q_disp, fmt, f"{ticker} - Quarterly Cash Flow")
+
+    format_excel_ratios(wb, worksheets["Financial Ratios"], ratios_df, fmt)
+    format_excel_valuation(wb, worksheets["Valuation & DCF"], valuation_results, overview, fmt)
+
+    wb.close()
+    print(f"\nSUCCESS — Report saved to: {output_file}")
+
+if __name__ == "__main__":
+    main()
